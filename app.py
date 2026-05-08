@@ -51,6 +51,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+# ==================== 數據抓取 ====================
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_market_data():
     end = datetime.now()
@@ -87,62 +88,85 @@ def fetch_market_data():
 
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_fear_greed():
-    url = "https://edition.cnn.com/markets/fear-and-greed"
     headers = {"User-Agent": "Mozilla/5.0"}
+
+    # ── 方法 A：CNN __NEXT_DATA__ scrape ──────────────────────
     try:
-        resp = requests.get(url, headers=headers, timeout=20)
-        resp.raise_for_status()
+        resp = requests.get(
+            "https://edition.cnn.com/markets/fear-and-greed",
+            headers=headers, timeout=20
+        )
         html = resp.text
-
-        m = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html, re.DOTALL)
+        m = re.search(
+            r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
+            html, re.DOTALL
+        )
         if m:
-            try:
-                jd = json.loads(m.group(1))
+            jd = json.loads(m.group(1))
 
-                def find_timeline(obj, depth=0):
-                    if depth > 10:
-                        return None
-                    if isinstance(obj, dict):
-                        if "timeline" in obj and isinstance(obj["timeline"], list):
-                            return obj["timeline"]
-                        for v in obj.values():
-                            r = find_timeline(v, depth + 1)
-                            if r:
-                                return r
-                    elif isinstance(obj, list):
-                        for x in obj:
-                            r = find_timeline(x, depth + 1)
-                            if r:
-                                return r
+            def find_fg_score(obj, depth=0):
+                if depth > 12:
                     return None
+                if isinstance(obj, dict):
+                    for key in ("score", "value", "fgi"):
+                        if key in obj:
+                            v = obj[key]
+                            if isinstance(v, (int, float)) and 0 < v <= 100:
+                                return int(v)
+                    if "timeline" in obj and isinstance(obj["timeline"], list):
+                        tl = obj["timeline"]
+                        items = [x for x in tl if isinstance(x, dict) and "value" in x]
+                        if items:
+                            return int(items[-1]["value"])
+                    for v in obj.values():
+                        r = find_fg_score(v, depth + 1)
+                        if r:
+                            return r
+                elif isinstance(obj, list):
+                    for x in obj:
+                        r = find_fg_score(x, depth + 1)
+                        if r:
+                            return r
+                return None
 
-                tl = find_timeline(jd)
-                if tl:
-                    items = [x for x in tl if isinstance(x, dict) and "value" in x]
-                    if items:
-                        latest = items[-1]
-                        return int(latest["value"]), pd.to_datetime(latest.get("date", pd.Timestamp.now()))
-            except Exception:
-                pass
-
-        patterns = [
-            r'Greed Now:\s*(\d{1,3})',
-            r'Fear & Greed Index[^0-9]{0,80}(\d{1,3})',
-            r'"value"\s*:\s*(\d{1,3})'
-        ]
-        for p in patterns:
-            mm = re.search(p, html, re.IGNORECASE | re.DOTALL)
-            if mm:
-                val = int(mm.group(1))
-                if 0 <= val <= 100:
-                    return val, pd.Timestamp.now()
-
-        return 50, pd.Timestamp.now()
+            score = find_fg_score(jd)
+            if score and 0 < score <= 100:
+                return score, pd.Timestamp.now()
     except Exception:
-        return 50, pd.Timestamp.now()
+        pass
+
+    # ── 方法 B：feargreedmeter.com JSON API ───────────────────
+    try:
+        resp = requests.get(
+            "https://feargreedmeter.com/api/v1/fgi/now",
+            headers=headers, timeout=10
+        )
+        jd = resp.json()
+        val = int(jd.get("fgi", {}).get("now", {}).get("value", 0))
+        if 0 < val <= 100:
+            return val, pd.Timestamp.now()
+    except Exception:
+        pass
+
+    # ── 方法 C：alternative.me API（加密市場 F&G 備用）────────
+    try:
+        resp = requests.get(
+            "https://api.alternative.me/fng/?limit=1",
+            headers=headers, timeout=10
+        )
+        jd = resp.json()
+        val = int(jd["data"][0]["value"])
+        if 0 < val <= 100:
+            return val, pd.Timestamp.now()
+    except Exception:
+        pass
+
+    return 50, pd.Timestamp.now()
 
 
-def add_ma_traces(fig, series, row, col, base_name, color_main, secondary_y=None, multiply=1.0, dash_main=None):
+# ==================== MA 輔助函數 ====================
+def add_ma_traces(fig, series, row, col, base_name, color_main,
+                  secondary_y=None, multiply=1.0, dash_main=None):
     if len(series) == 0:
         return
     ps = series * multiply
@@ -166,6 +190,7 @@ def add_ma_traces(fig, series, row, col, base_name, color_main, secondary_y=None
     ), row=row, col=col, **kw)
 
 
+# ==================== 建立圖表 ====================
 def build_fig(data, fg_val, fg_date):
     fig = make_subplots(
         rows=4, cols=2,
@@ -216,7 +241,8 @@ def build_fig(data, fg_val, fg_date):
     fig.add_trace(go.Indicator(
         mode="gauge+number",
         value=fg_val,
-        title={"text": f"Fear & Greed<br><span style='font-size:11px'>{mood}</span>", "font": {"color": "white"}},
+        title={"text": f"Fear & Greed<br><span style='font-size:11px'>{mood}</span>",
+               "font": {"color": "white"}},
         number={"font": {"color": bc, "size": 44}},
         gauge={
             "axis": {"range": [0, 100], "tickcolor": "white"},
@@ -254,6 +280,7 @@ def build_fig(data, fg_val, fg_date):
     return fig
 
 
+# ==================== 快照表格 ====================
 def snapshot_html(data, fg_val, fg_date):
     rows = ""
     for name, s in data.items():
@@ -307,6 +334,7 @@ def snapshot_html(data, fg_val, fg_date):
     </table>"""
 
 
+# ==================== 主介面 ====================
 st.markdown('''<div class="title-box">
   <h2 style="margin:0;color:white;">🌐 金融市場 Dashboard</h2>
   <p style="margin:4px 0 0 0;color:#9ca3af;font-size:13px;">
