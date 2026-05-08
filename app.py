@@ -90,65 +90,7 @@ def fetch_market_data():
 def fetch_fear_greed():
     headers = {"User-Agent": "Mozilla/5.0"}
 
-    # ── 方法 A：CNN __NEXT_DATA__ scrape ──────────────────────
-    try:
-        resp = requests.get(
-            "https://edition.cnn.com/markets/fear-and-greed",
-            headers=headers, timeout=50
-        )
-        html = resp.text
-        m = re.search(
-            r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
-            html, re.DOTALL
-        )
-        if m:
-            jd = json.loads(m.group(1))
-
-            def find_fg_score(obj, depth=0):
-                if depth > 12:
-                    return None
-                if isinstance(obj, dict):
-                    for key in ("score", "value", "fgi"):
-                        if key in obj:
-                            v = obj[key]
-                            if isinstance(v, (int, float)) and 0 < v <= 100:
-                                return int(v)
-                    if "timeline" in obj and isinstance(obj["timeline"], list):
-                        tl = obj["timeline"]
-                        items = [x for x in tl if isinstance(x, dict) and "value" in x]
-                        if items:
-                            return int(items[-1]["value"])
-                    for v in obj.values():
-                        r = find_fg_score(v, depth + 1)
-                        if r:
-                            return r
-                elif isinstance(obj, list):
-                    for x in obj:
-                        r = find_fg_score(x, depth + 1)
-                        if r:
-                            return r
-                return None
-
-            score = find_fg_score(jd)
-            if score and 0 < score <= 100:
-                return score, pd.Timestamp.now()
-    except Exception:
-        pass
-
-    # ── 方法 B：feargreedmeter.com JSON API ───────────────────
-    try:
-        resp = requests.get(
-            "https://feargreedmeter.com/api/v1/fgi/now",
-            headers=headers, timeout=10
-        )
-        jd = resp.json()
-        val = int(jd.get("fgi", {}).get("now", {}).get("value", 0))
-        if 0 < val <= 100:
-            return val, pd.Timestamp.now()
-    except Exception:
-        pass
-
-    # ── 方法 C：alternative.me API（加密市場 F&G 備用）────────
+    # ── 方法 A：alternative.me API（加密市場 F&G 備用）────────
     try:
         resp = requests.get(
             "https://api.alternative.me/fng/?limit=1",
@@ -198,7 +140,7 @@ def build_fig(data, fg_val, fg_date):
             "IWM (Russell 2000)", "VIX Volatility Index",
             "S&P 500 Index", "10Y Treasury Yield (%)",
             "DXY (左軸) & USD/HKD (右軸)", "WTI Crude Oil (USD/桶)",
-            "Gold Futures (USD/盎司)", "CNN Fear & Greed",
+            "Gold Futures (USD/盎司)", "Crypto Fear & Greed",
         ),
         vertical_spacing=0.09,
         horizontal_spacing=0.10,
