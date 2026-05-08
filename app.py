@@ -158,6 +158,14 @@ def build_fig(data, fg_val, fg_date):
     add_ma_traces(fig, data.get("10Y Yield", pd.Series()), 2, 2, "10Y Yield", "#F9844A", multiply=100)
     fig.update_yaxes(title_text="Yield (%)", row=2, col=2)
 
+    dxy, usdhkd = data.get("DXY", pd.Series()), data.get("USD/HKD", pd.Series())
+    if len(dxy) > 0:
+        add_ma_traces(fig, dxy, 3, 1, "DXY", "#9B5DE5", secondary_y=False)
+        fig.update_yaxes(title_text="DXY", secondary_y=False, row=3, col=1)
+    if len(usdhkd) > 0:
+        add_ma_traces(fig, usdhkd, 3, 1, "USD/HKD", "#00BBF9", secondary_y=True, dash_main="dot")
+        fig.update_yaxes(title_text="USD/HKD", secondary_y=True, row=3, col=1)                
+    
     add_ma_traces(fig, data.get("Oil (WTI)", pd.Series()), 3, 2, "WTI Oil", "#F8961E")
     add_ma_traces(fig, data.get("Gold", pd.Series()), 4, 1, "Gold", "#FFD60A")
 
