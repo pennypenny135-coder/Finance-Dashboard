@@ -16,7 +16,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# ── 自定義 CSS ──────────────────────────────────────────────
 st.markdown("""
 <style>
     .stApp { background-color: #0b1120; }
@@ -52,21 +51,20 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ==================== 數據抓取（含緩存）====================
-@st.cache_data(ttl=300, show_spinner=False)   # 5 分鐘緩存
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_market_data():
-    end   = datetime.now()
+    end = datetime.now()
     start = end - timedelta(days=130)
 
     tickers = {
-        "S&P 500":  "^GSPC",
-        "IWM":      "IWM",
-        "VIX":      "^VIX",
-        "10Y Yield":"^TNX",
-        "Oil (WTI)":"CL=F",
-        "Gold":     "GC=F",
-        "DXY":      "DX-Y.NYB",
-        "USD/HKD":  "USDHKD=X",
+        "S&P 500": "^GSPC",
+        "IWM": "IWM",
+        "VIX": "^VIX",
+        "10Y Yield": "^TNX",
+        "Oil (WTI)": "CL=F",
+        "Gold": "GC=F",
+        "DXY": "DX-Y.NYB",
+        "USD/HKD": "USDHKD=X",
     }
 
     data = {}
@@ -87,56 +85,74 @@ def fetch_market_data():
     return data
 
 
-@st.cache_data(ttl=3600, show_spinner=False)   # 1 小時緩存
+@st.cache_data(ttl=900, show_spinner=False)
 def fetch_fear_greed():
-    url     = "https://edition.cnn.com/markets/fear-and-greed"
+    url = "https://edition.cnn.com/markets/fear-and-greed"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        resp  = requests.get(url, headers=headers, timeout=15)
-        match = re.search(
-            r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
-            resp.text, re.DOTALL
-        )
-        if not match:
-            return 50, pd.Timestamp.now()
-        jd = json.loads(match.group(1))
+        resp = requests.get(url, headers=headers, timeout=20)
+        resp.raise_for_status()
+        html = resp.text
 
-        def find_tl(obj, d=0):
-            if d > 8: return None
-            if isinstance(obj, dict):
-                if "timeline" in obj and isinstance(obj["timeline"], list):
-                    return obj["timeline"]
-                for v in obj.values():
-                    r = find_tl(v, d+1)
-                    if r: return r
-            elif isinstance(obj, list):
-                for i in obj:
-                    r = find_tl(i, d+1)
-                    if r: return r
+        m = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html, re.DOTALL)
+        if m:
+            try:
+                jd = json.loads(m.group(1))
 
-        tl = find_tl(jd)
-        if not tl: return 50, pd.Timestamp.now()
-        items  = [x for x in tl if "date" in x and "value" in x]
-        latest = items[-1]
-        return int(latest["value"]), pd.to_datetime(latest["date"])
-    except:
+                def find_timeline(obj, depth=0):
+                    if depth > 10:
+                        return None
+                    if isinstance(obj, dict):
+                        if "timeline" in obj and isinstance(obj["timeline"], list):
+                            return obj["timeline"]
+                        for v in obj.values():
+                            r = find_timeline(v, depth + 1)
+                            if r:
+                                return r
+                    elif isinstance(obj, list):
+                        for x in obj:
+                            r = find_timeline(x, depth + 1)
+                            if r:
+                                return r
+                    return None
+
+                tl = find_timeline(jd)
+                if tl:
+                    items = [x for x in tl if isinstance(x, dict) and "value" in x]
+                    if items:
+                        latest = items[-1]
+                        return int(latest["value"]), pd.to_datetime(latest.get("date", pd.Timestamp.now()))
+            except Exception:
+                pass
+
+        patterns = [
+            r'Greed Now:\s*(\d{1,3})',
+            r'Fear & Greed Index[^0-9]{0,80}(\d{1,3})',
+            r'"value"\s*:\s*(\d{1,3})'
+        ]
+        for p in patterns:
+            mm = re.search(p, html, re.IGNORECASE | re.DOTALL)
+            if mm:
+                val = int(mm.group(1))
+                if 0 <= val <= 100:
+                    return val, pd.Timestamp.now()
+
+        return 50, pd.Timestamp.now()
+    except Exception:
         return 50, pd.Timestamp.now()
 
 
-# ==================== MA 輔助 ====================
-def add_ma_traces(fig, series, row, col, base_name, color_main,
-                  secondary_y=None, multiply=1.0, dash_main=None):
+def add_ma_traces(fig, series, row, col, base_name, color_main, secondary_y=None, multiply=1.0, dash_main=None):
     if len(series) == 0:
         return
-    ps   = series * multiply
+    ps = series * multiply
     ma10 = ps.rolling(10).mean()
     ma20 = ps.rolling(20).mean()
-    kw   = {"secondary_y": secondary_y} if secondary_y is not None else {}
+    kw = {"secondary_y": secondary_y} if secondary_y is not None else {}
 
     fig.add_trace(go.Scatter(
         x=ps.index, y=ps.values, name=base_name,
-        line=dict(color=color_main, width=2.5,
-                  dash=dash_main or "solid")
+        line=dict(color=color_main, width=2.5, dash=dash_main or "solid")
     ), row=row, col=col, **kw)
 
     fig.add_trace(go.Scatter(
@@ -150,15 +166,14 @@ def add_ma_traces(fig, series, row, col, base_name, color_main,
     ), row=row, col=col, **kw)
 
 
-# ==================== 建立圖表 ====================
 def build_fig(data, fg_val, fg_date):
     fig = make_subplots(
         rows=4, cols=2,
         subplot_titles=(
             "IWM (Russell 2000)", "VIX Volatility Index",
-            "S&P 500 Index",      "10Y Treasury Yield (%)",
+            "S&P 500 Index", "10Y Treasury Yield (%)",
             "DXY (左軸) & USD/HKD (右軸)", "WTI Crude Oil (USD/桶)",
-            "Gold Futures (USD/盎司)",      "CNN Fear & Greed",
+            "Gold Futures (USD/盎司)", "CNN Fear & Greed",
         ),
         vertical_spacing=0.09,
         horizontal_spacing=0.10,
@@ -170,45 +185,48 @@ def build_fig(data, fg_val, fg_date):
         ],
     )
 
-    add_ma_traces(fig, data.get("IWM", pd.Series()),       1, 1, "IWM",      "#4CC9F0")
-    add_ma_traces(fig, data.get("VIX", pd.Series()),       1, 2, "VIX",      "#F72585")
-    add_ma_traces(fig, data.get("S&P 500", pd.Series()),   2, 1, "S&P 500",  "#90BE6D")
-    add_ma_traces(fig, data.get("10Y Yield", pd.Series()), 2, 2, "10Y Yield","#F9844A", multiply=100)
+    add_ma_traces(fig, data.get("IWM", pd.Series()), 1, 1, "IWM", "#4CC9F0")
+    add_ma_traces(fig, data.get("VIX", pd.Series()), 1, 2, "VIX", "#F72585")
+    add_ma_traces(fig, data.get("S&P 500", pd.Series()), 2, 1, "S&P 500", "#90BE6D")
+    add_ma_traces(fig, data.get("10Y Yield", pd.Series()), 2, 2, "10Y Yield", "#F9844A", multiply=100)
     fig.update_yaxes(title_text="Yield (%)", row=2, col=2)
 
     dxy, usdhkd = data.get("DXY", pd.Series()), data.get("USD/HKD", pd.Series())
     if len(dxy) > 0:
-        add_ma_traces(fig, dxy,    3, 1, "DXY",     "#9B5DE5", secondary_y=False)
-        fig.update_yaxes(title_text="DXY",     secondary_y=False, row=3, col=1)
+        add_ma_traces(fig, dxy, 3, 1, "DXY", "#9B5DE5", secondary_y=False)
+        fig.update_yaxes(title_text="DXY", secondary_y=False, row=3, col=1)
     if len(usdhkd) > 0:
         add_ma_traces(fig, usdhkd, 3, 1, "USD/HKD", "#00BBF9", secondary_y=True, dash_main="dot")
-        fig.update_yaxes(title_text="USD/HKD", secondary_y=True,  row=3, col=1)
+        fig.update_yaxes(title_text="USD/HKD", secondary_y=True, row=3, col=1)
 
-    add_ma_traces(fig, data.get("Oil (WTI)", pd.Series()), 3, 2, "WTI Oil",  "#F8961E")
-    add_ma_traces(fig, data.get("Gold", pd.Series()),      4, 1, "Gold",     "#FFD60A")
+    add_ma_traces(fig, data.get("Oil (WTI)", pd.Series()), 3, 2, "WTI Oil", "#F8961E")
+    add_ma_traces(fig, data.get("Gold", pd.Series()), 4, 1, "Gold", "#FFD60A")
 
-    # Fear & Greed 儀表盤
-    if fg_val >= 75:   mood, bc = "極度貪婪 🤑", "#00c853"
-    elif fg_val >= 55: mood, bc = "貪婪 😏",     "#64dd17"
-    elif fg_val >= 45: mood, bc = "中性 😐",     "#ffd600"
-    elif fg_val >= 25: mood, bc = "恐懼 😨",     "#ff9100"
-    else:              mood, bc = "極度恐懼 😱", "#ff1744"
+    if fg_val >= 75:
+        mood, bc = "極度貪婪 🤑", "#00c853"
+    elif fg_val >= 55:
+        mood, bc = "貪婪 😏", "#64dd17"
+    elif fg_val >= 45:
+        mood, bc = "中性 😐", "#ffd600"
+    elif fg_val >= 25:
+        mood, bc = "恐懼 😨", "#ff9100"
+    else:
+        mood, bc = "極度恐懼 😱", "#ff1744"
 
     fig.add_trace(go.Indicator(
         mode="gauge+number",
         value=fg_val,
-        title={"text": f"Fear & Greed<br><span style='font-size:11px'>{mood}</span>",
-               "font": {"color": "white"}},
+        title={"text": f"Fear & Greed<br><span style='font-size:11px'>{mood}</span>", "font": {"color": "white"}},
         number={"font": {"color": bc, "size": 44}},
         gauge={
             "axis": {"range": [0, 100], "tickcolor": "white"},
-            "bar":  {"color": bc},
+            "bar": {"color": bc},
             "bgcolor": "#1a1a2e",
             "steps": [
-                {"range": [0,   25], "color": "#4a0d1a"},
-                {"range": [25,  45], "color": "#6b2d00"},
-                {"range": [45,  55], "color": "#665c00"},
-                {"range": [55,  75], "color": "#1f5f1f"},
+                {"range": [0, 25], "color": "#4a0d1a"},
+                {"range": [25, 45], "color": "#6b2d00"},
+                {"range": [45, 55], "color": "#665c00"},
+                {"range": [55, 75], "color": "#1f5f1f"},
                 {"range": [75, 100], "color": "#0b5d1e"},
             ],
             "threshold": {"line": {"color": "white", "width": 3}, "value": fg_val},
@@ -236,15 +254,15 @@ def build_fig(data, fg_val, fg_date):
     return fig
 
 
-# ==================== 最新快照表格 ====================
 def snapshot_html(data, fg_val, fg_date):
     rows = ""
     for name, s in data.items():
-        if len(s) == 0: continue
-        val  = float(s.iloc[-1])
+        if len(s) == 0:
+            continue
+        val = float(s.iloc[-1])
         prev = float(s.iloc[-2]) if len(s) > 1 else val
-        chg  = val - prev
-        pct  = (chg / prev * 100) if prev != 0 else 0
+        chg = val - prev
+        pct = (chg / prev * 100) if prev != 0 else 0
         if name == "10Y Yield":
             display = f"{val*100:.3f}%"
             chg_str = f"{chg*100:+.3f}%"
@@ -255,7 +273,7 @@ def snapshot_html(data, fg_val, fg_date):
             display = f"{val:,.2f}"
             chg_str = f"{chg:+.2f} ({pct:+.2f}%)"
         color_cls = "tag-up" if chg >= 0 else "tag-down"
-        arrow     = "▲" if chg >= 0 else "▼"
+        arrow = "▲" if chg >= 0 else "▼"
         rows += f"""<tr>
             <td>{name}</td>
             <td><b>{display}</b></td>
@@ -263,11 +281,16 @@ def snapshot_html(data, fg_val, fg_date):
             <td>{s.index[-1].strftime("%Y-%m-%d")}</td>
         </tr>"""
 
-    if fg_val >= 75:   mood = "極度貪婪"
-    elif fg_val >= 55: mood = "貪婪"
-    elif fg_val >= 45: mood = "中性"
-    elif fg_val >= 25: mood = "恐懼"
-    else:              mood = "極度恐懼"
+    if fg_val >= 75:
+        mood = "極度貪婪"
+    elif fg_val >= 55:
+        mood = "貪婪"
+    elif fg_val >= 45:
+        mood = "中性"
+    elif fg_val >= 25:
+        mood = "恐懼"
+    else:
+        mood = "極度恐懼"
     rows += f"""<tr>
         <td>Fear & Greed</td>
         <td><b>{fg_val}</b></td>
@@ -284,7 +307,6 @@ def snapshot_html(data, fg_val, fg_date):
     </table>"""
 
 
-# ==================== 主介面 ====================
 st.markdown('''<div class="title-box">
   <h2 style="margin:0;color:white;">🌐 金融市場 Dashboard</h2>
   <p style="margin:4px 0 0 0;color:#9ca3af;font-size:13px;">
@@ -292,12 +314,12 @@ st.markdown('''<div class="title-box">
   </p>
 </div>''', unsafe_allow_html=True)
 
-# ── 頂部工具列 ──────────────────────────────────────────────
 col_refresh, col_time, col_note = st.columns([1, 2, 4])
 
 with col_refresh:
     if st.button("🔄 Refresh 更新數據", type="primary", use_container_width=True):
-        st.cache_data.clear()
+        fetch_market_data.clear()
+        fetch_fear_greed.clear()
         st.rerun()
 
 with col_time:
@@ -314,12 +336,10 @@ with col_note:
 
 st.divider()
 
-# ── 加載數據 ─────────────────────────────────────────────────
 with st.spinner("📡 正在抓取最新市場數據..."):
-    data            = fetch_market_data()
+    data = fetch_market_data()
     fg_val, fg_date = fetch_fear_greed()
 
-# ── 圖表 ──────────────────────────────────────────────────────
 fig = build_fig(data, fg_val, fg_date)
 st.plotly_chart(fig, use_container_width=True, config={
     "displaylogo": False,
@@ -327,7 +347,6 @@ st.plotly_chart(fig, use_container_width=True, config={
     "responsive": True,
 })
 
-# ── 最新快照 ─────────────────────────────────────────────────
 st.markdown("### 📋 最新數據快照（含日變動）")
 st.markdown(snapshot_html(data, fg_val, fg_date), unsafe_allow_html=True)
 
