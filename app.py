@@ -94,7 +94,7 @@ def fetch_fear_greed():
     try:
         resp = requests.get(
             "https://edition.cnn.com/markets/fear-and-greed",
-            headers=headers, timeout=20
+            headers=headers, timeout=50
         )
         html = resp.text
         m = re.search(
